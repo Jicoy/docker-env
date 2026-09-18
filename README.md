@@ -1,15 +1,15 @@
-# Hack Sims — Supplies and Warehouse Management
+# App Installation
 
-Laravel 13 + Filament 5 + Filament Shield. Everything runs in Docker, so you
-don't have to install PHP, Postgres, Node or anything else on your machine.
+Laravel 13 + Filament 5 + Filament Shield, running entirely in Docker. You don't
+have to install PHP, Postgres, Node or anything else on your machine.
 
 ## Setup
 
 You need Docker Desktop. That's it.
 
 ```sh
-git clone <repo-url> hack-sims-app
-cd hack-sims-app
+git clone <repo-url> <folder-project>
+cd folder-project
 docker compose up -d --build
 ```
 
@@ -39,12 +39,14 @@ Four logins, all with the password `password`:
 | Email | Role |
 |---|---|
 | admin@example.com | `super_admin`, can do everything |
-| requester@example.com | Requesting Unit |
-| custodian@example.com | Warehouse Staff |
-| approver@example.com | Supply Officer |
+| requester@example.com | `requester` |
+| custodian@example.com | `custodian` |
+| approver@example.com | `approver` |
 
-The last three start with no permissions. Give them some in the panel under
-**Roles**.
+The last three are placeholders and start with no permissions. Give them some in
+the panel under **Roles**, or rename them in
+`database/seeders/ShieldRoleSeeder.php` to match whatever roles your app
+actually needs.
 
 ## Working on it
 
