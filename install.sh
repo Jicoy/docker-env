@@ -9,7 +9,7 @@
 #   ./install.sh              write everything, then `docker compose up -d --build`
 #   ./install.sh --no-up      write everything, stop before starting the stack
 #   ./install.sh --force      overwrite files this script would otherwise keep
-#   ./install.sh --image=NAME name the app image instead of being asked for one
+#   ./install.sh --name=NAME  set the project name instead of being asked for one
 #
 # Safe to re-run. Every file it replaces is copied into a timestamped backup
 # directory first, and steps that would clobber your own code are skipped
@@ -19,13 +19,13 @@ set -euo pipefail
 
 RUN_UP=1
 FORCE=0
-APP_IMAGE=""
+PROJECT_NAME=""
 
 for arg in "$@"; do
     case "$arg" in
         --no-up) RUN_UP=0 ;;
         --force) FORCE=1 ;;
-        --image=*) APP_IMAGE="${arg#--image=}" ;;
+        --name=*) PROJECT_NAME="${arg#--name=}" ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'Unknown option: %s (try --help)\n' "$arg" >&2; exit 2 ;;
     esac
@@ -91,39 +91,55 @@ fi
 note "Laravel project at $ROOT"
 
 ###############################################################################
-# App image name
+# Project name
 ###############################################################################
 
-# Docker's own rule for repository names, plus an optional :tag.
-valid_image() {
-    [[ "$1" =~ ^[a-z0-9]+([._-]+[a-z0-9]+)*(/[a-z0-9]+([._-]+[a-z0-9]+)*)*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$ ]]
+# One name drives everything the stack creates: the compose project (and so its
+# network and volumes), the app image, every container, the Postgres database
+# and user, and the Redis key prefix. Two checkouts with different names can
+# run side by side without colliding.
+
+# Compose's own rule for project names.
+valid_name() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
 }
 
 # A re-run offers whatever name the last run saved to .env.
-DEFAULT_IMAGE="hack-sims-app"
+DEFAULT_NAME="hack-sims"
 if [ -f .env ]; then
-    saved="$(grep -E '^APP_IMAGE=' .env | tail -n1 | cut -d= -f2- || true)"
-    [ -n "$saved" ] && DEFAULT_IMAGE="$saved"
+    saved="$(grep -E '^PROJECT_NAME=' .env | tail -n1 | cut -d= -f2- || true)"
+    [ -n "$saved" ] && DEFAULT_NAME="$saved"
 fi
 
-if [ -z "$APP_IMAGE" ]; then
+if [ -z "$PROJECT_NAME" ]; then
     if [ -t 0 ]; then
         while :; do
-            read -r -p "    Name for the app Docker image [$DEFAULT_IMAGE]: " APP_IMAGE
-            APP_IMAGE="${APP_IMAGE:-$DEFAULT_IMAGE}"
-            valid_image "$APP_IMAGE" && break
-            warn "'$APP_IMAGE' is not a valid image name (lowercase letters, digits, . _ - /, optional :tag)."
+            read -r -p "    Project name [$DEFAULT_NAME]: " PROJECT_NAME
+            PROJECT_NAME="${PROJECT_NAME:-$DEFAULT_NAME}"
+            valid_name "$PROJECT_NAME" && break
+            warn "'$PROJECT_NAME' is not valid (lowercase letters, digits, - and _, starting with a letter or digit)."
         done
     else
         # No terminal to ask on (CI, piped input): fall back quietly.
-        APP_IMAGE="$DEFAULT_IMAGE"
+        PROJECT_NAME="$DEFAULT_NAME"
     fi
 fi
 
-valid_image "$APP_IMAGE" || { warn "'$APP_IMAGE' is not a valid image name."; exit 2; }
-note "App image: $APP_IMAGE"
-# Exported so this run's `docker compose` calls use it even before a .env exists.
-export APP_IMAGE
+valid_name "$PROJECT_NAME" || { warn "'$PROJECT_NAME' is not a valid project name."; exit 2; }
+
+# Postgres identifiers and Redis prefixes read better without hyphens.
+DB_NAME="${PROJECT_NAME//-/_}"
+REDIS_PREFIX="${DB_NAME}_"
+
+note "Project    $PROJECT_NAME"
+note "Image      $PROJECT_NAME-app"
+note "Containers $PROJECT_NAME-{setup,php,nginx,vite,pgdb,redis,adminer}"
+note "Database   $DB_NAME (user $DB_NAME)"
+note "Redis keys ${REDIS_PREFIX}*"
+
+# Exported so this run's `docker compose` calls use them even before a .env
+# exists; .env takes over from the next run on.
+export PROJECT_NAME DB_DATABASE="$DB_NAME" DB_USERNAME="$DB_NAME" REDIS_PREFIX
 
 ###############################################################################
 # .docker/php
@@ -532,11 +548,13 @@ write docker-compose.yml <<'EOF_COMPOSE'
 #
 # Sign in with admin@example.com / password.
 
+name: ${PROJECT_NAME:-hack-sims}
+
 x-app: &app
   build:
     context: .docker/php
     dockerfile: Dockerfile
-  image: ${APP_IMAGE:-hack-sims-app}
+  image: ${PROJECT_NAME:-hack-sims}-app
   volumes:
     - .:/var/www:cached
     # node_modules is a container-owned volume, never the host's: rollup and
@@ -552,6 +570,7 @@ x-app: &app
     DB_PASSWORD: ${DB_PASSWORD:-secret}
     REDIS_HOST: redis
     REDIS_PORT: 6379
+    REDIS_PREFIX: ${REDIS_PREFIX:-hack_sims_}
     CACHE_STORE: redis
     SESSION_DRIVER: redis
     # No queue worker in this stack, so jobs run inline rather than piling up
@@ -566,7 +585,7 @@ services:
   ###########################
   setup:
     <<: *app
-    container_name: hack-sims-setup
+    container_name: ${PROJECT_NAME:-hack-sims}-setup
     command: app-setup
     restart: "no"
     depends_on:
@@ -580,7 +599,7 @@ services:
   ###########################
   php:
     <<: *app
-    container_name: hack-sims-php
+    container_name: ${PROJECT_NAME:-hack-sims}-php
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -590,7 +609,7 @@ services:
   ###########################
   nginx:
     image: nginx:1.27
-    container_name: hack-sims-nginx
+    container_name: ${PROJECT_NAME:-hack-sims}-nginx
     ports:
       - "${APP_PORT:-80}:80"
     volumes:
@@ -605,7 +624,7 @@ services:
   ###########################
   vite:
     <<: *app
-    container_name: hack-sims-vite
+    container_name: ${PROJECT_NAME:-hack-sims}-vite
     command: npm run dev
     ports:
       - "${VITE_PORT:-5173}:5173"
@@ -618,7 +637,7 @@ services:
   ###########################
   pg_db:
     image: postgres:16
-    container_name: hack-sims-pgdb
+    container_name: ${PROJECT_NAME:-hack-sims}-pgdb
     environment:
       POSTGRES_DB: ${DB_DATABASE:-hack_sims}
       POSTGRES_USER: ${DB_USERNAME:-hack_sims}
@@ -641,7 +660,7 @@ services:
   ###########################
   redis:
     image: redis:7-alpine
-    container_name: hack-sims-redis
+    container_name: ${PROJECT_NAME:-hack-sims}-redis
     ports:
       - "${FORWARD_REDIS_PORT:-6379}:6379"
     volumes:
@@ -657,7 +676,7 @@ services:
   ###########################
   adminer:
     image: adminer:latest
-    container_name: hack-sims-adminer
+    container_name: ${PROJECT_NAME:-hack-sims}-adminer
     environment:
       ADMINER_DEFAULT_SERVER: pg_db
       ADMINER_DESIGN: pepa-linha
@@ -937,11 +956,12 @@ apply_env() {
     set_env "$file" DB_CONNECTION pgsql
     set_env "$file" DB_HOST pg_db
     set_env "$file" DB_PORT 5432
-    set_env "$file" DB_DATABASE hack_sims
-    set_env "$file" DB_USERNAME hack_sims
+    set_env "$file" DB_DATABASE "$DB_NAME"
+    set_env "$file" DB_USERNAME "$DB_NAME"
     set_env "$file" DB_PASSWORD secret
     set_env "$file" REDIS_HOST redis
     set_env "$file" REDIS_PORT 6379
+    set_env "$file" REDIS_PREFIX "$REDIS_PREFIX"
     set_env "$file" CACHE_STORE redis
     set_env "$file" SESSION_DRIVER redis
     set_env "$file" QUEUE_CONNECTION sync
@@ -954,7 +974,7 @@ apply_env() {
     set_env "$file" FORWARD_DB_PORT 5432
     set_env "$file" FORWARD_REDIS_PORT 6379
     set_env "$file" DEMO_USER_PASSWORD password
-    set_env "$file" APP_IMAGE "$APP_IMAGE"
+    set_env "$file" PROJECT_NAME "$PROJECT_NAME"
 
     note "updated $file"
 }
