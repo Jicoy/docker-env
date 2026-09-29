@@ -72,6 +72,7 @@ Options:
 ```sh
 ./install.sh --no-up    # write the config but don't start containers
 ./install.sh --force    # overwrite files it would otherwise leave alone
+./install.sh --image=my-app   # name the app image instead of being prompted
 ```
 
 Run it as many times as you like. It skips whatever is already done, and
