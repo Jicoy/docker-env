@@ -9,6 +9,7 @@
 #   ./install.sh              write everything, then `docker compose up -d --build`
 #   ./install.sh --no-up      write everything, stop before starting the stack
 #   ./install.sh --force      overwrite files this script would otherwise keep
+#   ./install.sh --image=NAME name the app image instead of being asked for one
 #
 # Safe to re-run. Every file it replaces is copied into a timestamped backup
 # directory first, and steps that would clobber your own code are skipped
@@ -18,11 +19,13 @@ set -euo pipefail
 
 RUN_UP=1
 FORCE=0
+APP_IMAGE=""
 
 for arg in "$@"; do
     case "$arg" in
         --no-up) RUN_UP=0 ;;
         --force) FORCE=1 ;;
+        --image=*) APP_IMAGE="${arg#--image=}" ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'Unknown option: %s (try --help)\n' "$arg" >&2; exit 2 ;;
     esac
@@ -86,6 +89,41 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 note "Laravel project at $ROOT"
+
+###############################################################################
+# App image name
+###############################################################################
+
+# Docker's own rule for repository names, plus an optional :tag.
+valid_image() {
+    [[ "$1" =~ ^[a-z0-9]+([._-]+[a-z0-9]+)*(/[a-z0-9]+([._-]+[a-z0-9]+)*)*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$ ]]
+}
+
+# A re-run offers whatever name the last run saved to .env.
+DEFAULT_IMAGE="hack-sims-app"
+if [ -f .env ]; then
+    saved="$(grep -E '^APP_IMAGE=' .env | tail -n1 | cut -d= -f2- || true)"
+    [ -n "$saved" ] && DEFAULT_IMAGE="$saved"
+fi
+
+if [ -z "$APP_IMAGE" ]; then
+    if [ -t 0 ]; then
+        while :; do
+            read -r -p "    Name for the app Docker image [$DEFAULT_IMAGE]: " APP_IMAGE
+            APP_IMAGE="${APP_IMAGE:-$DEFAULT_IMAGE}"
+            valid_image "$APP_IMAGE" && break
+            warn "'$APP_IMAGE' is not a valid image name (lowercase letters, digits, . _ - /, optional :tag)."
+        done
+    else
+        # No terminal to ask on (CI, piped input): fall back quietly.
+        APP_IMAGE="$DEFAULT_IMAGE"
+    fi
+fi
+
+valid_image "$APP_IMAGE" || { warn "'$APP_IMAGE' is not a valid image name."; exit 2; }
+note "App image: $APP_IMAGE"
+# Exported so this run's `docker compose` calls use it even before a .env exists.
+export APP_IMAGE
 
 ###############################################################################
 # .docker/php
@@ -498,7 +536,7 @@ x-app: &app
   build:
     context: .docker/php
     dockerfile: Dockerfile
-  image: hack-sims-app
+  image: ${APP_IMAGE:-hack-sims-app}
   volumes:
     - .:/var/www:cached
     # node_modules is a container-owned volume, never the host's: rollup and
@@ -916,6 +954,7 @@ apply_env() {
     set_env "$file" FORWARD_DB_PORT 5432
     set_env "$file" FORWARD_REDIS_PORT 6379
     set_env "$file" DEMO_USER_PASSWORD password
+    set_env "$file" APP_IMAGE "$APP_IMAGE"
 
     note "updated $file"
 }
