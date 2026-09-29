@@ -72,7 +72,7 @@ Options:
 ```sh
 ./install.sh --no-up    # write the config but don't start containers
 ./install.sh --force    # overwrite files it would otherwise leave alone
-./install.sh --image=my-app   # name the app image instead of being prompted
+./install.sh --name=my-shop   # set the project name instead of being prompted
 ```
 
 Run it as many times as you like. It skips whatever is already done, and
@@ -130,5 +130,10 @@ This deletes the database.
 - Web fonts aren't downloaded during the build. Laravel's starter fetches
   Instrument Sans from fonts.bunny.net, which fails the whole setup on a
   restricted network. `vite.config.js` shows how to turn it back on.
-- Container names are `hack-sims-*`. Change them in `docker-compose.yml` if you
-  want, or if you need two of these running side by side.
+- The installer asks for a project name (default `hack-sims`) and saves it as
+  `PROJECT_NAME` in `.env`. That name is used for the app image
+  (`<name>-app`), every container (`<name>-php`, `<name>-redis`, …), the volumes,
+  the Postgres database and user (hyphens become underscores, so `my-shop` gives
+  `my_shop`) and the Redis key prefix (`my_shop_`). Pick different names to run
+  two checkouts side by side. Changing the name later gives you a new, empty
+  database, because the volumes are named after it too.
